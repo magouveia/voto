@@ -2,10 +2,9 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fs from 'fs';
-import pkg from 'pg';
-import * as cheerio from 'cheerio';
-const { Pool } = pkg;
+import { db } from './src/db/index.js';
+import { appClubs, appAthletes, appVotes } from './src/db/schema.js';
+import { eq, desc, asc, sql } from 'drizzle-orm';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,292 +12,167 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-// Set up PostgreSQL Pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  // Uncomment below if your Hetzner Postgres requires SSL
-  // ssl: { rejectUnauthorized: false }
-});
+function calculateEscalaoServer(birthDateString: string) {
+  const year = new Date(birthDateString).getFullYear();
+  if (year <= 2008) return 'Seniores Femininos';
+  if (year === 2009 || year === 2010) return 'Sub-18 Femininos';
+  if (year === 2011 || year === 2012) return 'Sub-16 Femininos';
+  if (year === 2013 || year === 2014) return 'Sub-14 Femininos';
+  if (year === 2015 || year === 2016) return 'Sub-12 Femininos';
+  if (year === 2017) return 'Sub-10 Femininos';
+  return 'Bambis / Baby Andebol';
+}
 
-// Create tables if they don't exist
-const initDB = async () => {
-  if (!process.env.DATABASE_URL) {
-    console.warn("⚠️ DATABASE_URL não definido. A usar ficheiro local como fallback temporário para testes.");
-    return;
-  }
-
-  try {
-    // Tabela atualizada para incluir cipa_atleta (VARCHAR) e tornar o número opcional
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS votes (
-        id SERIAL PRIMARY KEY,
-        clube_votante VARCHAR(255) NOT NULL,
-        escalao VARCHAR(50) NOT NULL,
-        premio VARCHAR(100) NOT NULL,
-        numero_atleta INTEGER,
-        cipa_atleta VARCHAR(50) NOT NULL,
-        nome_atleta VARCHAR(255) NOT NULL,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS clubs (
-        id SERIAL PRIMARY KEY,
-        escalao VARCHAR(50) NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        url VARCHAR(255) NOT NULL
-      );
-    `);
-    console.log("✅ Base de dados PostgreSQL inicializada com sucesso!");
-  } catch (error) {
-    console.error("❌ Erro ao inicializar PostgreSQL:", error);
-  }
-};
-initDB();
-
-// Fallback JSON methods
-const DB_FILE = path.join(__dirname, 'votes.json');
-const getVotesFallback = () => {
-  if (fs.existsSync(DB_FILE)) {
-    try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')); } catch (e) { return []; }
-  }
-  return [];
-};
-const saveVoteFallback = (vote: any) => {
-  const votes = getVotesFallback();
-  const newVote = { id: Math.random().toString(36).substring(2, 9), ...vote, timestamp: new Date().toISOString() };
-  votes.push(newVote);
-  fs.writeFileSync(DB_FILE, JSON.stringify(votes, null, 2));
-  return newVote;
-};
-
-const CLUBS_FILE = path.join(__dirname, 'clubs.json');
-const getClubsFallback = () => {
-  if (fs.existsSync(CLUBS_FILE)) {
-    try { return JSON.parse(fs.readFileSync(CLUBS_FILE, 'utf-8')); } catch (e) { return []; }
-  }
-  return [];
-};
-const saveClubFallback = (club: any) => {
-  const clubs = getClubsFallback();
-  const newClub = { id: Math.random().toString(36).substring(2, 9), ...club };
-  clubs.push(newClub);
-  fs.writeFileSync(CLUBS_FILE, JSON.stringify(clubs, null, 2));
-  return newClub;
-};
-const deleteClubFallback = (id: string) => {
-  let clubs = getClubsFallback();
-  clubs = clubs.filter((c: any) => c.id !== id);
-  fs.writeFileSync(CLUBS_FILE, JSON.stringify(clubs, null, 2));
-};
-
-// API Endpoints
 app.get('/api/clubs', async (req, res) => {
-  if (!process.env.DATABASE_URL) return res.json(getClubsFallback());
   try {
-    const result = await pool.query('SELECT * FROM clubs ORDER BY escalao, name');
-    res.json(result.rows.map(row => ({ id: row.id.toString(), escalao: row.escalao, name: row.name, url: row.url })));
+    const clubs = await db.query.appClubs.findMany({
+      orderBy: [asc(appClubs.name)]
+    });
+    res.json(clubs);
   } catch (error) {
-    res.status(500).json({ error: 'Falha ao obter clubes' });
+    res.status(500).json({ error: 'Erro ao obter clubes' });
   }
 });
 
 app.post('/api/clubs', async (req, res) => {
-  const { escalao, name, url } = req.body;
-  if (!process.env.DATABASE_URL) return res.json({ success: true, club: saveClubFallback(req.body) });
+  const { name } = req.body;
   try {
-    const result = await pool.query('INSERT INTO clubs (escalao, name, url) VALUES ($1, $2, $3) RETURNING *', [escalao, name, url]);
-    res.json({ success: true, club: { id: result.rows[0].id.toString(), escalao: result.rows[0].escalao, name: result.rows[0].name, url: result.rows[0].url } });
+    const newClub = await db.insert(appClubs).values({ name }).returning();
+    res.json(newClub[0]);
   } catch (error) {
-    res.status(500).json({ error: 'Falha ao guardar clube' });
+    res.status(500).json({ error: 'Erro ao criar clube' });
   }
 });
 
 app.put('/api/clubs/:id', async (req, res) => {
-  const { id } = req.params;
-  const { name, url, escalao } = req.body;
-  if (!process.env.DATABASE_URL) {
-    let clubs = getClubsFallback();
-    const idx = clubs.findIndex((c: any) => c.id === id);
-    if (idx >= 0) {
-      clubs[idx] = { ...clubs[idx], name, url, escalao };
-      fs.writeFileSync(CLUBS_FILE, JSON.stringify(clubs, null, 2));
-    }
-    return res.json({ success: true, id });
-  }
+  const { name } = req.body;
   try {
-    await pool.query('UPDATE clubs SET name = $1, url = $2, escalao = $3 WHERE id = $4', [name, url, escalao, id]);
-    res.json({ success: true, id });
+    const updatedClub = await db.update(appClubs).set({ name }).where(eq(appClubs.id, parseInt(req.params.id))).returning();
+    res.json(updatedClub[0]);
   } catch (error) {
-    res.status(500).json({ error: 'Falha ao atualizar clube' });
+    res.status(500).json({ error: 'Erro ao atualizar clube' });
   }
 });
 
 app.delete('/api/clubs/:id', async (req, res) => {
-  const { id } = req.params;
-  if (!process.env.DATABASE_URL) {
-    deleteClubFallback(id);
-    return res.json({ success: true });
-  }
   try {
-    await pool.query('DELETE FROM clubs WHERE id = $1', [id]);
+    await db.delete(appClubs).where(eq(appClubs.id, parseInt(req.params.id)));
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: 'Falha ao remover clube' });
+    res.status(500).json({ error: 'Erro ao apagar clube' });
   }
 });
 
-app.get('/api/votes', async (req, res) => {
-  if (!process.env.DATABASE_URL) {
-    return res.json(getVotesFallback());
-  }
+app.get('/api/athletes', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM votes ORDER BY timestamp DESC');
-    const mapped = result.rows.map(row => ({
-      id: row.id.toString(),
-      clubeVotante: row.clube_votante,
-      escalao: row.escalao,
-      premio: row.premio,
-      numeroAtleta: row.numero_atleta,
-      cipaAtleta: row.cipa_atleta, 
-      nomeAtleta: row.nome_atleta,
-      timestamp: row.timestamp,
-    }));
-    res.json(mapped);
-  } catch (error) {
-    console.error('Error fetching votes from DB:', error);
-    res.status(500).json({ error: 'Falha ao obter votos' });
-  }
-});
-
-// NOVO: Endpoint do Contador de Votos focado no CIPA e Nome
-app.get('/api/votes/count', async (req, res) => {
-  if (!process.env.DATABASE_URL) {
-    const votes = getVotesFallback();
-    const counts: Record<string, any> = {};
-    
-    votes.forEach((v: any) => {
-      const key = `${v.cipaAtleta || 'sem_cipa'}_${v.premio}`;
-      if (!counts[key]) {
-        counts[key] = { 
-          cipaAtleta: v.cipaAtleta || 'N/A', 
-          nomeAtleta: v.nomeAtleta, 
-          premio: v.premio, 
-          totalVotos: 0 
-        };
-      }
-      counts[key].totalVotos += 1;
+    const athletes = await db.query.appAthletes.findMany({
+      orderBy: [asc(appAthletes.name)]
     });
-    return res.json(Object.values(counts).sort((a: any, b: any) => b.totalVotos - a.totalVotos));
-  }
-
-  try {
-    const result = await pool.query(`
-      SELECT cipa_atleta as "cipaAtleta", nome_atleta as "nomeAtleta", premio, COUNT(id)::int as "totalVotos"
-      FROM votes
-      GROUP BY cipa_atleta, nome_atleta, premio
-      ORDER BY premio, "totalVotos" DESC
-    `);
-    res.json(result.rows);
+    res.json(athletes);
   } catch (error) {
-    console.error('Error counting votes:', error);
-    res.status(500).json({ error: 'Falha ao contar votos' });
+    res.status(500).json({ error: 'Erro ao obter atletas' });
+  }
+});
+
+app.post('/api/athletes', async (req, res) => {
+  const { club_id, cipa, name, birth_date } = req.body;
+  const escalao = calculateEscalaoServer(birth_date);
+  try {
+    const newAthlete = await db.insert(appAthletes).values({
+      club_id,
+      cipa,
+      name,
+      birth_date,
+      escalao
+    }).returning();
+    res.json(newAthlete[0]);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao criar atleta. Verifique se o CIPA já existe.' });
+  }
+});
+
+app.put('/api/athletes/:id', async (req, res) => {
+  const { club_id, cipa, name, birth_date } = req.body;
+  const escalao = calculateEscalaoServer(birth_date);
+  try {
+    const updatedAthlete = await db.update(appAthletes).set({
+      club_id,
+      cipa,
+      name,
+      birth_date,
+      escalao
+    }).where(eq(appAthletes.id, parseInt(req.params.id))).returning();
+    res.json(updatedAthlete[0]);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao atualizar atleta' });
+  }
+});
+
+app.delete('/api/athletes/:id', async (req, res) => {
+  try {
+    await db.delete(appAthletes).where(eq(appAthletes.id, parseInt(req.params.id)));
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao apagar atleta' });
   }
 });
 
 app.post('/api/votes', async (req, res) => {
-  const { clubeVotante, escalao, premio, numeroAtleta, cipaAtleta, nomeAtleta } = req.body;
-
-  if (!process.env.DATABASE_URL) {
-    const newVote = saveVoteFallback(req.body);
-    return res.json({ success: true, vote: newVote });
-  }
-
+  const { match_escalao, club_a_id, club_b_id, votes } = req.body;
   try {
-    const result = await pool.query(
-      'INSERT INTO votes (clube_votante, escalao, premio, numero_atleta, cipa_atleta, nome_atleta) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [clubeVotante, escalao, premio, numeroAtleta, cipaAtleta, nomeAtleta]
-    );
-    res.json({ success: true, vote: result.rows });
+    await db.transaction(async (tx) => {
+      for (const vote of votes) {
+        if (vote.athlete_cipa) {
+          await tx.insert(appVotes).values({
+            match_escalao,
+            club_a_id,
+            club_b_id,
+            category: vote.category,
+            athlete_cipa: vote.athlete_cipa
+          });
+        }
+      }
+    });
+    res.json({ success: true });
   } catch (error) {
-    console.error('Error saving vote to DB:', error);
-    res.status(500).json({ error: 'Falha ao guardar voto' });
+    console.error('Error saving votes:', error);
+    res.status(500).json({ error: 'Falha ao guardar votos' });
   }
 });
 
-// Endpoint to scrape FPA website for a specific team URL
-app.post('/api/scraper/fpa', async (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: 'URL ou CIPAs em falta' });
-
+app.get('/api/votes/results', async (req, res) => {
   try {
-    const atletas: Array<{ numero: number | null, nome: string, cipa?: string }> = [];
-
-    if (/^[\d\s,]+$/.test(url)) {
-      console.log(`Scraping CIPA list: ${url}`);
-      const cipas = url.split(',').map((c: string) => c.trim()).filter((c: string) => c.length > 0);
-
-      for (const cipa of cipas) {
-        try {
-          const resFpa = await fetch(`https://portal.fpa.pt/associado/${cipa}/`);
-          if (resFpa.ok) {
-            const html = await resFpa.text();
-            const match = html.match(/<title>(.*?)<\/title>/);
-            if (match) {
-              const name = match[1].split('-')[0].trim();
-              if (name) {
-                atletas.push({
-                  numero: null,
-                  nome: name,
-                  cipa: cipa
-                });
-              }
-            }
-          }
-        } catch (e) {
-          console.error(`Erro ao obter CIPA ${cipa}`, e);
-        }
-      }
-      return res.json({ success: true, atletas });
-    }
-
-    console.log(`Scraping FPA URL: ${url}`);
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Falha ao aceder ao site da FPA');
-    const html = await response.text();
-
-    const regex = /var\s+TABLE_CONTENT(?:_\d+)?\s*=\s*(\{.*?\});/gs;
-    let match;
-
-    while ((match = regex.exec(html)) !== null) {
-      try {
-        const data = JSON.parse(match);
-        if (data && data.rows) {
-          data.rows.forEach((row: any) => {
-            let cipaValue = '';
-            if (row.col_cipa) cipaValue = String(row.col_cipa).trim();
-            
-            atletas.push({
-              numero: row.col_numero ? parseInt(row.col_numero) : null,
-              nome: row.col_nome || row.name || 'Atleta Desconhecida',
-              cipa: cipaValue
-            });
-          });
-        }
-      } catch (e) {
-        console.error("Erro ao fazer parse dos dados da tabela FPA", e);
-      }
-    }
+    const results = await db
+      .select({
+        cipa: appVotes.athlete_cipa,
+        name: appAthletes.name,
+        category: appVotes.category,
+        total_votes: sql<number>`count(${appVotes.id})::int`
+      })
+      .from(appVotes)
+      .innerJoin(appAthletes, eq(appVotes.athlete_cipa, appAthletes.cipa))
+      .groupBy(appVotes.athlete_cipa, appAthletes.name, appVotes.category)
+      .orderBy(asc(appVotes.category), desc(sql`count(${appVotes.id})`), asc(appAthletes.name));
     
-    return res.json({ success: true, atletas });
-  } catch (error: any) {
-    console.error('Error scraper:', error);
-    res.status(500).json({ error: error.message || 'Falha ao executar o scraper' });
+    res.json(results);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro ao contar votos' });
+  }
+});
+
+app.delete('/api/votes/reset', async (req, res) => {
+  try {
+    await db.delete(appVotes);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao limpar votos' });
   }
 });
 
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
-  const PORT = 3000;
+  const PORT = process.env.APP_PORT || 3000;
 
   if (!isProd) {
     const vite = await createViteServer({
