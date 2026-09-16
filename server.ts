@@ -26,19 +26,21 @@ const initDB = async () => {
     console.warn("⚠️ DATABASE_URL não definido. A usar ficheiro local como fallback temporário para testes.");
     return;
   }
-  
+
   try {
+    // Tabela atualizada para incluir cipa_atleta (VARCHAR) e tornar o número opcional
     await pool.query(`
       CREATE TABLE IF NOT EXISTS votes (
         id SERIAL PRIMARY KEY,
         clube_votante VARCHAR(255) NOT NULL,
         escalao VARCHAR(50) NOT NULL,
         premio VARCHAR(100) NOT NULL,
-        numero_atleta INTEGER NOT NULL,
+        numero_atleta INTEGER,
+        cipa_atleta VARCHAR(50) NOT NULL,
         nome_atleta VARCHAR(255) NOT NULL,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-      
+
       CREATE TABLE IF NOT EXISTS clubs (
         id SERIAL PRIMARY KEY,
         escalao VARCHAR(50) NOT NULL,
@@ -105,7 +107,7 @@ app.post('/api/clubs', async (req, res) => {
   if (!process.env.DATABASE_URL) return res.json({ success: true, club: saveClubFallback(req.body) });
   try {
     const result = await pool.query('INSERT INTO clubs (escalao, name, url) VALUES ($1, $2, $3) RETURNING *', [escalao, name, url]);
-    res.json({ success: true, club: { id: result.rows[0].id.toString(), escalao: result.rows[0].escalao, name: result.rows[0].name, url: result.rows[0].url } });
+    res.json({ success: true, club: { id: result.rows.id.toString(), escalao: result.rows.escalao, name: result.rows.name, url: result.rows.url } });
   } catch (error) {
     res.status(500).json({ error: 'Falha ao guardar clube' });
   }
@@ -151,13 +153,13 @@ app.get('/api/votes', async (req, res) => {
   }
   try {
     const result = await pool.query('SELECT * FROM votes ORDER BY timestamp DESC');
-    // Map snake_case from DB to camelCase for frontend
     const mapped = result.rows.map(row => ({
       id: row.id.toString(),
       clubeVotante: row.clube_votante,
       escalao: row.escalao,
       premio: row.premio,
       numeroAtleta: row.numero_atleta,
+      cipaAtleta: row.cipa_atleta, 
       nomeAtleta: row.nome_atleta,
       timestamp: row.timestamp,
     }));
@@ -168,9 +170,44 @@ app.get('/api/votes', async (req, res) => {
   }
 });
 
+// NOVO: Endpoint do Contador de Votos focado no CIPA e Nome
+app.get('/api/votes/count', async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    const votes = getVotesFallback();
+    const counts: Record<string, any> = {};
+    
+    votes.forEach((v: any) => {
+      const key = `${v.cipaAtleta || 'sem_cipa'}_${v.premio}`;
+      if (!counts[key]) {
+        counts[key] = { 
+          cipaAtleta: v.cipaAtleta || 'N/A', 
+          nomeAtleta: v.nomeAtleta, 
+          premio: v.premio, 
+          totalVotos: 0 
+        };
+      }
+      counts[key].totalVotos += 1;
+    });
+    return res.json(Object.values(counts).sort((a: any, b: any) => b.totalVotos - a.totalVotos));
+  }
+
+  try {
+    const result = await pool.query(`
+      SELECT cipa_atleta as "cipaAtleta", nome_atleta as "nomeAtleta", premio, COUNT(id)::int as "totalVotos"
+      FROM votes
+      GROUP BY cipa_atleta, nome_atleta, premio
+      ORDER BY premio, "totalVotos" DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error counting votes:', error);
+    res.status(500).json({ error: 'Falha ao contar votos' });
+  }
+});
+
 app.post('/api/votes', async (req, res) => {
-  const { clubeVotante, escalao, premio, numeroAtleta, nomeAtleta } = req.body;
-  
+  const { clubeVotante, escalao, premio, numeroAtleta, cipaAtleta, nomeAtleta } = req.body;
+
   if (!process.env.DATABASE_URL) {
     const newVote = saveVoteFallback(req.body);
     return res.json({ success: true, vote: newVote });
@@ -178,10 +215,10 @@ app.post('/api/votes', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'INSERT INTO votes (clube_votante, escalao, premio, numero_atleta, nome_atleta) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [clubeVotante, escalao, premio, numeroAtleta, nomeAtleta]
+      'INSERT INTO votes (clube_votante, escalao, premio, numero_atleta, cipa_atleta, nome_atleta) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [clubeVotante, escalao, premio, numeroAtleta, cipaAtleta, nomeAtleta]
     );
-    res.json({ success: true, vote: result.rows[0] });
+    res.json({ success: true, vote: result.rows });
   } catch (error) {
     console.error('Error saving vote to DB:', error);
     res.status(500).json({ error: 'Falha ao guardar voto' });
@@ -192,23 +229,22 @@ app.post('/api/votes', async (req, res) => {
 app.post('/api/scraper/fpa', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL ou CIPAs em falta' });
-  
+
   try {
     const atletas: Array<{ numero: number | null, nome: string, cipa?: string }> = [];
 
-    // Check if the string passed is just a comma-separated list of numbers (CIPAs)
     if (/^[\d\s,]+$/.test(url)) {
       console.log(`Scraping CIPA list: ${url}`);
       const cipas = url.split(',').map((c: string) => c.trim()).filter((c: string) => c.length > 0);
-      
+
       for (const cipa of cipas) {
         try {
-          const res = await fetch(`https://portal.fpa.pt/associado/${cipa}/`);
-          if (res.ok) {
-            const html = await res.text();
+          const resFpa = await fetch(`https://fpa.pt{cipa}/`);
+          if (resFpa.ok) {
+            const html = await resFpa.text();
             const match = html.match(/<title>(.*?)<\/title>/);
             if (match) {
-              const name = match[1].split('-')[0].trim();
+              const name = match.split('-').trim();
               if (name) {
                 atletas.push({
                   numero: null,
@@ -229,61 +265,43 @@ app.post('/api/scraper/fpa', async (req, res) => {
     const response = await fetch(url);
     if (!response.ok) throw new Error('Falha ao aceder ao site da FPA');
     const html = await response.text();
-    
-    // O site da FPA guarda os dados em variáveis JS injetadas (ex: TABLE_CONTENT_2)
+
     const regex = /var\s+TABLE_CONTENT(?:_\d+)?\s*=\s*(\{.*?\});/gs;
     let match;
-    
+
     while ((match = regex.exec(html)) !== null) {
       try {
-        const data = JSON.parse(match[1]);
-        if (data && data.rows && Array.isArray(data.rows)) {
+        const data = JSON.parse(match);
+        if (data && data.rows) {
           data.rows.forEach((row: any) => {
-            // Se tiver o campo ATLETA a 'S' e tiver NOME
-            if (row.CIP_NOME && (row.ATLETA === 'S' || row.ATLETA === '1' || row.CIP_NUMERO)) {
-               // Evita duplicados (caso haja múltiplas tabelas com as mesmas pessoas)
-               if (!atletas.find(a => a.nome === row.CIP_NOME)) {
-                 atletas.push({
-                   // Usa o numero do cartao/ficha como fallback para o número da camisola
-                   numero: parseInt(row.CIP_NUMERO || Math.floor(Math.random()*99), 10),
-                   nome: row.CIP_NOME
-                 });
-               }
-            }
+            let cipaValue = '';
+            if (row.col_cipa) cipaValue = String(row.col_cipa).trim();
+            
+            atletas.push({
+              numero: row.col_numero ? parseInt(row.col_numero) : null,
+              nome: row.col_nome || row.name || 'Atleta Desconhecida',
+              cipa: cipaValue
+            });
           });
         }
       } catch (e) {
-        // Ignora erros de parse de uma tabela específica
+        console.error("Erro ao fazer parse dos dados da tabela FPA", e);
       }
     }
-
-    res.json({ success: true, atletas });
+    
+    return res.json({ success: true, atletas });
   } catch (error: any) {
-    console.error('Erro de Raspagem FPA:', error.message);
-    res.status(500).json({ error: 'Falha na obtenção das jogadoras via raspagem.' });
+    console.error('Error scraper:', error);
+    res.status(500).json({ error: error.message || 'Falha ao executar o scraper' });
   }
 });
 
-async function startServer() {
-  const isProd = process.env.NODE_ENV === 'production';
-
-  if (!isProd) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dist/index.html'));
-    });
-  }
-
-  const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`Server running on port ${port}`);
-  });
+// ATUALIZADO: Iniciar o servidor local na porta correta (3040)
+if (process.env.NODE_ENV !== 'production') {
+const PORT = process.env.PORT || 3040;
+app.listen(PORT, () => {
+console.log(`🚀 Servidor backend a correr na porta ${PORT}`);
+});
 }
 
-startServer();
+export default app;

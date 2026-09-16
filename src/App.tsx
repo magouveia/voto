@@ -44,9 +44,9 @@ export default function App() {
   
   // 3-in-1 Votes state
   const [votesState, setVotesState] = useState<Record<string, { clubeAtletaId: string, numero: string, nome: string }>>({
-    'Melhor Jogadora': { clubeAtletaId: '', numero: '', nome: '' },
-    'Melhor Defensora': { clubeAtletaId: '', numero: '', nome: '' },
-    'Melhor Guarda Redes': { clubeAtletaId: '', numero: '', nome: '' }
+    'Melhor Jogadora': { clubeAtletaId: '', numero: '', nome: '', cipa: '' },
+    'Melhor Defensora': { clubeAtletaId: '', numero: '', nome: '', cipa: '' },
+    'Melhor Guarda Redes': { clubeAtletaId: '', numero: '', nome: '', cipa: '' }
   });
 
   // Scraper cache
@@ -135,7 +135,8 @@ export default function App() {
             escalao,
             premio,
             numeroAtleta: parseInt(v.numero, 10),
-            nomeAtleta: v.nome
+            nomeAtleta: v.nome,
+            cipaAtleta: v.cipa || v.cipaAtleta || ""
           })
         });
       }));
@@ -145,9 +146,9 @@ export default function App() {
       setClubeVotante('');
       setEscalao(ESCALOES[0]);
       setVotesState({
-        'Melhor Jogadora': { clubeAtletaId: '', numero: '', nome: '' },
-        'Melhor Defensora': { clubeAtletaId: '', numero: '', nome: '' },
-        'Melhor Guarda Redes': { clubeAtletaId: '', numero: '', nome: '' }
+        'Melhor Jogadora': { clubeAtletaId: '', numero: '', nome: '', cipa: '' },
+        'Melhor Defensora': { clubeAtletaId: '', numero: '', nome: '', cipa: '' },
+        'Melhor Guarda Redes': { clubeAtletaId: '', numero: '', nome: '', cipa: '' }
       });
     } catch (e) {
       alert('Erro ao submeter votos. Tente novamente.');
