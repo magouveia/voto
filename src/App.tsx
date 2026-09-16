@@ -43,7 +43,7 @@ export default function App() {
   const [escalao, setEscalao] = useState(ESCALOES[0]);
   
   // 3-in-1 Votes state
-  const [votesState, setVotesState] = useState<Record<string, { clubeAtletaId: string, numero: string, nome: string }>>({
+  const [votesState, setVotesState] = useState<Record<string, { clubeAtletaId: string, numero: string, nome: string, cipa: string }>>({
     'Melhor Jogadora': { clubeAtletaId: '', numero: '', nome: '', cipa: '' },
     'Melhor Defensora': { clubeAtletaId: '', numero: '', nome: '', cipa: '' },
     'Melhor Guarda Redes': { clubeAtletaId: '', numero: '', nome: '', cipa: '' }
@@ -428,12 +428,12 @@ export default function App() {
   };
 
   const renderAdmin = () => {
-    const grouped: Record<string, Record<string, Record<string, { nome: string, numero: number, count: number }>>> = {};
+    const grouped: Record<string, Record<string, Record<string, { nome: string, numero: number, cipa?: string, count: number }>>> = {};
     votes.forEach(v => {
       if (!grouped[v.escalao]) grouped[v.escalao] = {};
       if (!grouped[v.escalao][v.premio]) grouped[v.escalao][v.premio] = {};
-      const athleteKey = `${v.numeroAtleta}-${v.nomeAtleta.toLowerCase()}`;
-      if (!grouped[v.escalao][v.premio][athleteKey]) grouped[v.escalao][v.premio][athleteKey] = { nome: v.nomeAtleta, numero: v.numeroAtleta, count: 0 };
+      const athleteKey = (v as any).cipaAtleta ? (v as any).cipaAtleta : v.nomeAtleta.toLowerCase();
+      if (!grouped[v.escalao][v.premio][athleteKey]) grouped[v.escalao][v.premio][athleteKey] = { nome: v.nomeAtleta, numero: v.numeroAtleta, cipa: (v as any).cipaAtleta, count: 0 };
       grouped[v.escalao][v.premio][athleteKey].count++;
     });
 
@@ -476,7 +476,10 @@ export default function App() {
                             <li key={idx} className="flex items-center justify-between">
                               <div className="flex items-center gap-3">
                                 <span className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold ${idx === 0 ? 'bg-yellow-100 text-yellow-700' : 'bg-slate-200 text-slate-600'}`}>{idx + 1}</span>
-                                <div><p className="text-sm font-semibold text-slate-900"><span className="text-slate-500 mr-1">#{ath.numero}</span>{ath.nome}</p></div>
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-900">{ath.nome}</p>
+                                  {ath.cipa && <p className="text-xs text-slate-500">CIPA: {ath.cipa}</p>}
+                                </div>
                               </div>
                               <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded-md text-xs font-bold">{ath.count} {ath.count === 1 ? 'voto' : 'votos'}</span>
                             </li>

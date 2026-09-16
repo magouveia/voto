@@ -107,7 +107,7 @@ app.post('/api/clubs', async (req, res) => {
   if (!process.env.DATABASE_URL) return res.json({ success: true, club: saveClubFallback(req.body) });
   try {
     const result = await pool.query('INSERT INTO clubs (escalao, name, url) VALUES ($1, $2, $3) RETURNING *', [escalao, name, url]);
-    res.json({ success: true, club: { id: result.rows.id.toString(), escalao: result.rows.escalao, name: result.rows.name, url: result.rows.url } });
+    res.json({ success: true, club: { id: result.rows[0].id.toString(), escalao: result.rows[0].escalao, name: result.rows[0].name, url: result.rows[0].url } });
   } catch (error) {
     res.status(500).json({ error: 'Falha ao guardar clube' });
   }
@@ -239,12 +239,12 @@ app.post('/api/scraper/fpa', async (req, res) => {
 
       for (const cipa of cipas) {
         try {
-          const resFpa = await fetch(`https://fpa.pt{cipa}/`);
+          const resFpa = await fetch(`https://portal.fpa.pt/associado/${cipa}/`);
           if (resFpa.ok) {
             const html = await resFpa.text();
             const match = html.match(/<title>(.*?)<\/title>/);
             if (match) {
-              const name = match.split('-').trim();
+              const name = match[1].split('-')[0].trim();
               if (name) {
                 atletas.push({
                   numero: null,
@@ -296,12 +296,26 @@ app.post('/api/scraper/fpa', async (req, res) => {
   }
 });
 
-// ATUALIZADO: Iniciar o servidor local na porta correta (3040)
-if (process.env.NODE_ENV !== 'production') {
-const PORT = process.env.PORT || 3040;
-app.listen(PORT, () => {
-console.log(`🚀 Servidor backend a correr na porta ${PORT}`);
-});
+async function startServer() {
+  const isProd = process.env.NODE_ENV === 'production';
+  const PORT = 3000;
+
+  if (!isProd) {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(path.join(__dirname, 'dist')));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
+  });
 }
 
-export default app;
+startServer();
